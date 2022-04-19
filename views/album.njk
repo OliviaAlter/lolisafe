@@ -1,0 +1,153 @@
+{% set metaTitle %}
+{{- album.name | truncate(60, true, '…') + ' – ' + files.length + ' file' + ('s' if files.length !== 1) -}}
+{% endset %}
+{% set metaDesc = album.description | striptags | truncate(200, true, '…') %}
+{% set metaUrl = '/' + album.url %}
+
+{% set fileRoot = config.domain %}
+{% set metaImage = fileRoot + '/' + album.thumb %}
+
+{% extends "_layout.njk" %}
+
+{% set noJsUrl = '../' + album.url + '?nojs' %}
+{% set generateZips = config.uploads.generateZips %}
+{% set usingCdn = config.cloudflare and config.cloudflare.purgeCache %}
+
+{% block stylesheets %}
+<!-- Libs stylesheets -->
+<link rel="stylesheet" href="../libs/fontello/fontello.css{{ versions[1] }}">
+<!-- Stylesheets -->
+<link rel="stylesheet" href="../css/style.css{{ versions[1] }}">
+<link rel="stylesheet" href="../css/thumbs.css{{ versions[1] }}">
+<link rel="stylesheet" href="../css/album.css{{ versions[1] }}">
+{% endblock %}
+
+{% block scripts %}
+{% if not nojs -%}
+<!-- Libs stylesheets -->
+<script src="../libs/lazyload/lazyload.min.js{{ versions[3] }}"></script>
+<!-- Scripts -->
+<script src="../js/album.js{{ versions[1] }}"></script>
+<script src="../js/misc/utils.js{{ versions[1] }}"></script>
+{%- endif %}
+{% endblock %}
+
+{% block endmeta %}
+{% if not nojs -%}
+{% set noscriptRefreshUrl = noJsUrl %}
+{% include "_partial/noscript-refresh.njk" %}
+{%- endif %}
+{% endblock %}
+
+{% block content %}
+{{ super() }}
+<section class="section has-extra-bottom-padding">
+  <div class="container">
+    <nav class="level">
+      <div class="level-left">
+        <div class="level-item">
+          <h1 id="title" class="title">
+            {{ album.name | truncate(70, true, '…') }}
+          </h1>
+        </div>
+        <div class="level-item">
+          <p id="count" class="subtitle">
+            {{ files.length }} file{{ 's' if files.length !== 1 }} (<span class="file-size">{{ album.totalSize }} B</span>)
+          </p>
+        </div>
+      </div>
+
+      {% if generateZips -%}
+      <div class="level-right">
+        <p class="level-item">
+          {% if not files.length -%}
+          <a class="button is-primary is-outlined" disabled>
+            <span class="icon">
+              <i class="icon-cancel"></i>
+            </span>
+            <span>Empty album</span>
+          </a>
+          {%- elif album.downloadLink -%}
+            {%- if usingCDN -%}
+            <a class="button is-primary is-outlined" title="Be aware that album archive may be cached by CDN" href="../{{ album.downloadLink }}">
+              <span class="icon">
+                <i class="icon-download"></i>
+              </span>
+              <span>Download album</span>
+            </a>
+            {%- else -%}
+            <a class="button is-primary is-outlined" href="../{{ album.downloadLink }}">
+              <span class="icon">
+                <i class="icon-download"></i>
+              </span>
+              <span>Download album</span>
+            </a>
+            {%- endif -%}
+          {%- else -%}
+          <a class="button is-primary is-outlined" disabled>
+            <span class="icon">
+              <i class="icon-cancel"></i>
+            </span>
+            <span>Download disabled</span>
+          </a>
+          {%- endif %}
+        </p>
+      </div>
+      {%- endif %}
+    </nav>
+
+    {% if album.description -%}
+    <div class="subtitle description">
+      {{ album.description | nl2br | safe }}
+    </div>
+    {%- endif %}
+    <hr>
+
+    {% if nojs -%}
+    <article class="message">
+      <div class="message-body">
+        <p>You are viewing No-JS version of this album, so file size will be displayed in bytes.</p>
+        <p>Please <a href="../{{ album.url }}">click here</a> if you want to view its regular version.</p>
+      </div>
+    </article>
+    {%- endif %}
+
+    {% if files.length -%}
+    <div id="table" class="columns is-multiline is-mobile is-centered has-text-centered">
+      {% for file in files %}
+        <div class="image-container column">
+          <a class="image" href="{{ fileRoot }}/{{ file.name }}" target="_blank">
+            {% if file.thumb -%}
+              {% if nojs -%}
+              <img alt="{{ file.name }}" src="{{ fileRoot }}/{{ file.thumb }}" width="200" height="200" loading="lazy">
+              {%- else -%}
+              <img alt="{{ file.name }}" data-src="{{ fileRoot }}/{{ file.thumb }}">
+              {%- endif %}
+            {%- else -%}
+            <h1 class="title">{{ file.extname or 'N/A' }}</h1>
+            {%- endif %}
+          </a>
+          <div class="details">
+            <p class="name">{{ file.name }}</p>
+            <p class="file-size">{{ file.size }} B</p>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+    {%- else -%}
+    <article class="message">
+      <div class="message-body">
+        There are no files in the album.
+      </div>
+    </article>
+    {%- endif %}
+  </div>
+</section>
+
+{% set floatingHomeHref = '..' %}
+{% include "_partial/floating-home.njk" %}
+{% if not nojs -%}
+{% set noscriptMessage = 'If you are not automatically redirected to its No-JS version, <a href="' + noJsUrl + '">click here</a>.' %}
+{% include "_partial/noscript.njk" %}
+{%- endif %}
+{% endblock %}
