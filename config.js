@@ -65,7 +65,7 @@ module.exports = {
     Port on which to run the server.
     NOTE: Change port in .env file if using Docker.
   */
-  port: 80,
+  port: 443,
 
   /*
     Pages to process for the frontend.
