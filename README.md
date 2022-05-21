@@ -1,10 +1,10 @@
 # lolisafe, a small safe worth protecting
 
-[![safe.fiery.me](https://i.fiery.me/upN1Q.png)](https://safe.fiery.me)
+![image](https://user-images.githubusercontent.com/59114783/169667632-c961313e-2291-425d-8d95-b62f7c61e1f9.png)
 
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](https://raw.githubusercontent.com/WeebDev/lolisafe/master/LICENSE)
 
-## `safe.fiery.me`
+## `This fork is based on safe.fiery.me repo`
 
 [![JavaScript Style Guide](https://cdn.rawgit.com/standard/standard/master/badge.svg)](https://github.com/standard/standard)
 
