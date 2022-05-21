@@ -63,8 +63,8 @@ mode:
 
 ## thumbs.js
 
-[\[...\]](https://github.com/BobbyWibowo/lolisafe#script-for-missing-thumbnails)
+[\[...\]](https://github.com/OliviaAlter/lolisafe#script-for-missing-thumbnails)
 
 ## bump-versions.js
 
-[\[...\]](https://github.com/BobbyWibowo/lolisafe/tree/safe.fiery.me/src#readme)
+[\[...\]](https://github.com/OliviaAlter/lolisafe/tree/safe.fiery.me/src#readme)

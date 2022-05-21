@@ -1,8 +1,8 @@
 {
-  "Name": "safe.fiery.me",
+  "Name": "lolisafe.spinaria.xyz",
   "DestinationType": "ImageUploader, FileUploader",
   "RequestMethod": "POST",
-  "RequestURL": "https://safe.fiery.me/api/upload",
+  "RequestURL": "https://lolisafe.spinaria.xyz/api/upload",
   "Headers": {
     "token": "",
     "albumid": "",

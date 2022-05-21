@@ -2,7 +2,8 @@
 
 const newsfeed = {
   lsKey: 'newsfeed',
-  feedUrl: 'https://blog.fiery.me/rss-newsfeed.xml',
+  /* feedUrl: 'https://blog.fiery.me/rss-newsfeed.xml', */
+  feedUrl: 'localhost:8000/rss-newsfeed.xml',
   maxItems: 3,
   maxAge: 91 * 24 * 60 * 60, // 91 days (~3 months)
   dismissed: {},
