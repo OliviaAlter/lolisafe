@@ -138,9 +138,21 @@ module.exports = {
   /*
     Helmet security headers.
     https://github.com/helmetjs/helmet/tree/v5.0.2#how-it-works
+
+    These headers will be applied to ALL resources, including API endpoints,
+    and files if you serve them with node.
+    If you need to disable some of the headers at certain routes, it's recommended
+    to instead use own http server (nginx, etc.) in front of lolisafe and configure from there.
+
+    NOTE: You may set "helmet" option as an empty object {} to disable Helmet entirely.
+    Setting it as any falsy value will instead apply some default configurations.
   */
   helmet: {
     contentSecurityPolicy: false,
+    // Cross-Origin-* headers were enabled by default since Helmet v5.0.0
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: false,
     /*
     hsts: {
       maxAge: 63072000, // 2 years
@@ -148,8 +160,25 @@ module.exports = {
       preload: true
     }
     */
-    hsts: false
+    hsts: false,
+    // This was also enabled by default since Helmet v5.0.0
+    originAgentCluster: false
   },
+
+  /*
+    Access-Control-Allow-Origin
+    https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
+    These headers will be applied to ALL resources, including API endpoints,
+    and files if you serve them with node.
+
+    If set to true, it will be set as wildcard (*).
+    If set to any falsy value, it will be not set altogether.
+    Otherwise if any string value, it will be set as-is.
+
+    Whether to use this in conjunction with Cross-Origin-* headers depends on your needs.
+    FAQ: https://resourcepolicy.fyi/#acao
+  */
+  accessControlAllowOrigin: false,
 
   /*
     Trust proxy.
@@ -340,31 +369,82 @@ module.exports = {
 
       Default age will be the value at the very top of the array.
       If the array is populated but do not have a zero value,
-      permanent uploads will be rejected.
-      This only applies to new files uploaded after enabling the option.
+      attempts to set permanent upload age will be rejected.
 
-      If the array is empty or is set to falsy value, temporary uploads
-      feature will be disabled, and all uploads will be permanent (original behavior).
+      This only applies to new files uploaded AFTER enabling the option.
+      If disabled, any existing temporary uploads will not ever be automatically deleted,
+      since the safe assumes all uploads are permanent,
+      and thus will not start the periodical check up task.
 
-      When temporary uploads feature is disabled, any existing temporary uploads
-      will not ever be automatically deleted, since the safe will not start the
-      periodical checkup task.
+      DEPRECATED: Please use "retentionPeriods" option below instead.
     */
-    temporaryUploadAges: [
-      0, // permanent
-      1 / 60 * 15, // 15 minutes
-      1 / 60 * 30, // 30 minutes
-      1, // 1 hour
-      6, // 6 hours
-      12, // 12 hours
-      24, // 24 hours (1 day)
-      24 * 2, // 48 hours (2 days)
-      24 * 3, // 72 hours (3 days)
-      24 * 4, // 96 hours (4 days)
-      24 * 5, // 120 hours (5 days)
-      24 * 6, // 144 hours (6 days)
-      24 * 7 // 168 hours (7 days)
-    ],
+    // temporaryUploadAges: [],
+
+    /*
+      Usergroup-based file retention periods (temporary uploads ages).
+
+      You need to at least configure the default group (_), or any one group, to enable this.
+      If this is enabled, "temporaryUploadAges" option above will be completely ignored.
+
+      It's safe to disable and remove that option completely if you plan to only use this one.
+      The support for it was only kept as backwards-compatibility for older installations.
+
+      This only applies to new files uploaded AFTER enabling the option.
+      If disabled, any existing temporary uploads will not ever be automatically deleted,
+      since the safe assumes all uploads are permanent,
+      and thus will not start the periodical check up task.
+
+      Please refer to the examples below about inheritances
+      and how to set default retention for each groups.
+    */
+    retentionPeriods: {
+      // Defaults that also apply to non-registered users
+      _: [
+        24, // 24 hours (1 day) -- first value is the group's default retention
+        1 / 60 * 15, // 15 minutes
+        1 / 60 * 30, // 30 minutes
+        1, // 1 hour
+        6, // 6 hours
+        12 // 12 hours
+      ],
+      /*
+        Inheritance is based on each group's 'values' in permissionController.js.
+        Basically groups with higher 'value' will inherit retention periods
+        of any groups with lower 'values'.
+        You may remove all the groups below to apply the defaults above for everyone.
+      */
+      user: [
+        24 * 7, // 168 hours (7 days) -- group's default
+        24 * 2, // 48 hours (2 days)
+        24 * 3, // 72 hours (3 days)
+        24 * 4, // 96 hours (4 days)
+        24 * 5, // 120 hours (5 days)
+        24 * 6 // 144 hours (6 days)
+      ],
+      vip: [
+        24 * 30, // 720 hours (30 days) -- group's default
+        24 * 14, // 336 hours (14 days)
+        24 * 21, // 504 hours (21 days)
+        24 * 91 // 2184 hours (91 days)
+      ],
+      vvip: [
+        null, // -- if null, use previous group's default as this group's default
+        0, // permanent
+        24 * 183 // 4392 hours (183 days)
+      ],
+      moderator: [
+        0 // -- group's default
+        /*
+          vvip group also have 0 (permanent) in its retention periods,
+          but duplicates are perfectly fine and will be safely 'uniquified',
+          while still properly maintaining defaults when required.
+        */
+      ]
+      /*
+        Missing groups will follow the inheritance rules.
+        Following the example above, admin and superadmin will have the same retention periods as moderator.
+      */
+    },
 
     /*
       Interval of the periodical check up tasks for temporary uploads (in milliseconds).
@@ -398,7 +478,8 @@ module.exports = {
         '.mov',
         '.mkv'
       ], */
-      // Make sure maxSize is no bigger than the max size you configured for your ClamAV
+
+      // Make sure this doesn't exceed size limit in your ClamAV config
       maxSize: null, // Needs to be in MB
 
       // https://github.com/kylefarris/clamscan/tree/v2.1.2#getting-started
@@ -430,9 +511,18 @@ module.exports = {
         preference: 'clamdscan'
       },
 
-      // Experimental .passthrough() support
-      // Make sure StreamMaxLength option in ClamAV config is big enough
-      // https://github.com/kylefarris/clamscan/tree/v2.1.2#passthrough
+      /*
+        Experimental .passthrough() support.
+        https://github.com/kylefarris/clamscan/tree/v2.1.2#passthrough
+
+        If enabled, StreamMaxLength in ClamAV config must be able to accommodate your
+        main "maxSize" option (not to be confused with "maxSize" in "scan" options group).
+        Final file size can't be determined before passthrough,
+        so file of all sizes will have to be scanned regardless.
+
+        This will only passthrough scan non-chunked file uploads.
+        Chunked file uploads and URL uploads will still use the default scan method.
+      */
       clamPassthrough: false
     },
 

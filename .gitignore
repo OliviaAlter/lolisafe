@@ -55,6 +55,7 @@ package-lock.json
 
 # User files
 .DS_Store
+.node-version
 .nvmrc
 !.gitkeep
 /start.json
@@ -63,5 +64,3 @@ package-lock.json
 # User directories (renders)
 /public/render/**/original
 /public/render/**/wip
-
-.vercel

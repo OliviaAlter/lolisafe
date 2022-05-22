@@ -1,6 +1,7 @@
 const { promisify } = require('util')
 const fetch = require('node-fetch')
 const ffmpeg = require('fluent-ffmpeg')
+const MarkdownIt = require('markdown-it')
 const path = require('path')
 const sharp = require('sharp')
 const si = require('systeminformation')
@@ -14,7 +15,7 @@ const logger = require('./../logger')
 const db = require('knex')(config.database)
 
 const self = {
-  clamscan: {
+  scan: {
     instance: null,
     version: null,
     groupBypass: config.uploads.scan.groupBypass || null,
@@ -24,6 +25,15 @@ const self = {
       : null,
     maxSize: (parseInt(config.uploads.scan.maxSize) * 1e6) || null,
     passthrough: config.uploads.scan.clamPassthrough
+  },
+  md: {
+    instance: new MarkdownIt({
+      // https://markdown-it.github.io/markdown-it/#MarkdownIt.new
+      html: false,
+      breaks: true,
+      linkify: true
+    }),
+    defaultRenderers: {}
   },
   gitHash: null,
   idSet: null,
@@ -42,7 +52,98 @@ const self = {
   ffprobe: promisify(ffmpeg.ffprobe),
 
   albumsCache: {},
-  timezoneOffset: new Date().getTimezoneOffset()
+  timezoneOffset: new Date().getTimezoneOffset(),
+
+  retentions: {
+    enabled: false,
+    periods: {},
+    default: {}
+  }
+}
+
+// Remember old renderer, if overridden, or proxy to default renderer
+self.md.defaultRenderers.link_open = self.md.instance.renderer.rules.link_open || function (tokens, idx, options, env, that) {
+  return that.renderToken(tokens, idx, options)
+}
+
+// Add target="_blank" to URLs if applicable
+self.md.instance.renderer.rules.link_open = function (tokens, idx, options, env, that) {
+  const aIndex = tokens[idx].attrIndex('target')
+  if (aIndex < 0) {
+    tokens[idx].attrPush(['target', '_blank'])
+  } else {
+    tokens[idx].attrs[aIndex][1] = '_blank'
+  }
+  return self.md.defaultRenderers.link_open(tokens, idx, options, env, that)
+}
+
+if (typeof config.uploads.retentionPeriods === 'object' &&
+Object.keys(config.uploads.retentionPeriods).length) {
+  // Build a temporary index of group values
+  const _retentionPeriods = Object.assign({}, config.uploads.retentionPeriods)
+  const _groups = { _: -1 }
+  Object.assign(_groups, perms.permissions)
+
+  // Sanitize config values
+  const names = Object.keys(_groups)
+  for (const name of names) {
+    if (Array.isArray(_retentionPeriods[name]) && _retentionPeriods[name].length) {
+      _retentionPeriods[name] = _retentionPeriods[name]
+        .filter((v, i, a) => (Number.isFinite(v) && v >= 0) || v === null)
+    } else {
+      _retentionPeriods[name] = []
+    }
+  }
+
+  if (!_retentionPeriods._.length && !config.private) {
+    logger.error('Guests\' retention periods are missing, yet this installation is not set to private.')
+    process.exit(1)
+  }
+
+  // Create sorted array of group names based on their values
+  const _sorted = Object.keys(_groups)
+    .sort((a, b) => _groups[a] - _groups[b])
+
+  // Build retention periods array for each groups
+  for (let i = 0; i < _sorted.length; i++) {
+    const current = _sorted[i]
+    const _periods = [..._retentionPeriods[current]]
+    self.retentions.default[current] = _periods.length ? _periods[0] : null
+
+    if (i > 0) {
+      // Inherit retention periods of lower-valued groups
+      for (let j = i - 1; j >= 0; j--) {
+        const lower = _sorted[j]
+        if (_groups[lower] < _groups[current]) {
+          _periods.unshift(..._retentionPeriods[lower])
+          if (self.retentions.default[current] === null) {
+            self.retentions.default[current] = self.retentions.default[lower]
+          }
+        }
+      }
+    }
+
+    self.retentions.periods[current] = _periods
+      .filter((v, i, a) => v !== null && a.indexOf(v) === i) // re-sanitize & uniquify
+      .sort((a, b) => a - b) // sort from lowest to highest (zero/permanent will always be first)
+
+    // Mark the feature as enabled, if at least one group was configured
+    if (self.retentions.periods[current].length) {
+      self.retentions.enabled = true
+    }
+  }
+} else if (Array.isArray(config.uploads.temporaryUploadAges) &&
+config.uploads.temporaryUploadAges.length) {
+  self.retentions.periods._ = config.uploads.temporaryUploadAges
+    .filter((v, i, a) => Number.isFinite(v) && v >= 0)
+  self.retentions.default._ = self.retentions.periods._[0]
+
+  for (const name of Object.keys(perms.permissions)) {
+    self.retentions.periods[name] = self.retentions.periods._
+    self.retentions.default[name] = self.retentions.default._
+  }
+
+  self.retentions.enabled = true
 }
 
 const statsData = {
@@ -643,8 +744,11 @@ self.bulkDeleteExpired = async (dryrun, verbose) => {
     const field = fields[0]
     const values = result.expired.slice().map(row => row[field])
     result.failed = await self.bulkDeleteFromDb(field, values, sudo)
+    if (verbose && result.failed.length) {
+      result.failed = result.failed
+        .map(failed => result.expired.find(file => file[fields[0]] === failed))
+    }
   }
-
   return result
 }
 
@@ -693,12 +797,12 @@ self.stats = async (req, res, next) => {
         const time = si.time()
         const nodeUptime = process.uptime()
 
-        if (self.clamscan.instance) {
+        if (self.scan.instance) {
           try {
-            self.clamscan.version = await self.clamscan.instance.getVersion().then(s => s.trim())
+            self.scan.version = await self.scan.instance.getVersion().then(s => s.trim())
           } catch (error) {
             logger.error(error)
-            self.clamscan.version = 'Errored when querying version.'
+            self.scan.version = 'Errored when querying version.'
           }
         }
 
@@ -706,7 +810,7 @@ self.stats = async (req, res, next) => {
           Platform: `${os.platform} ${os.arch}`,
           Distro: `${os.distro} ${os.release}`,
           Kernel: os.kernel,
-          Scanner: self.clamscan.version || 'N/A',
+          Scanner: self.scan.version || 'N/A',
           'CPU Load': `${currentLoad.currentLoad.toFixed(1)}%`,
           'CPUs Load': currentLoad.cpus.map(cpu => `${cpu.load.toFixed(1)}%`).join(', '),
           'System Memory': {
@@ -941,8 +1045,11 @@ self.stats = async (req, res, next) => {
           activeAlbums.push(album.id)
           if (album.download) stats[data.title].Downloadable++
           if (album.public) stats[data.title].Public++
-          if (album.zipGeneratedAt) stats[data.title]['ZIP Generated']++
         }
+
+        await paths.readdir(paths.zips).then(files => {
+          stats[data.title]['ZIP Generated'] = files.length
+        }).catch(() => {})
 
         stats[data.title]['Files in albums'] = await db.table('files')
           .whereIn('albumid', activeAlbums)

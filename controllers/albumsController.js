@@ -128,6 +128,9 @@ self.list = async (req, res, next) => {
       album.uploads = 0
       album.size = 0
       album.zipSize = null
+      album.descriptionHtml = album.description
+        ? utils.md.instance.render(album.description)
+        : ''
 
       // Map by IDs
       albumids[album.id] = album
@@ -233,6 +236,7 @@ self.create = async (req, res, next) => {
 
 self.delete = async (req, res, next) => {
   // Map /delete requests to /disable route
+  req.body.del = true
   return self.disable(req, res, next)
 }
 
@@ -240,15 +244,38 @@ self.disable = async (req, res, next) => {
   try {
     const user = await utils.authorize(req)
 
-    const id = req.body.id
+    const ismoderator = perms.is(user, 'moderator')
+
+    const id = parseInt(req.body.id)
+    if (isNaN(id)) throw new ClientError('No album specified.')
+
     const purge = req.body.purge
-    if (!Number.isFinite(id)) throw new ClientError('No album specified.')
+    const del = ismoderator ? req.body.del : false
+
+    const filter = function () {
+      this.where('id', id)
+
+      if (!ismoderator) {
+        this.andWhere({
+          enabled: 1,
+          userid: user.id
+        })
+      }
+    }
+
+    const album = await db.table('albums')
+      .where(filter)
+      .first()
+
+    if (!album) {
+      throw new ClientError('Could not get album with the specified ID.')
+    }
 
     if (purge) {
       const files = await db.table('files')
         .where({
           albumid: id,
-          userid: user.id
+          userid: album.userid
         })
 
       if (files.length) {
@@ -259,26 +286,22 @@ self.disable = async (req, res, next) => {
       utils.invalidateStatsCache('uploads')
     }
 
-    await db.table('albums')
-      .where({
-        id,
-        userid: user.id
-      })
-      .update('enabled', 0)
+    if (del) {
+      await db.table('albums')
+        .where(filter)
+        .first()
+        .del()
+    } else {
+      await db.table('albums')
+        .where(filter)
+        .first()
+        .update('enabled', 0)
+    }
     utils.invalidateAlbumsCache([id])
     utils.invalidateStatsCache('albums')
 
-    const identifier = await db.table('albums')
-      .select('identifier')
-      .where({
-        id,
-        userid: user.id
-      })
-      .first()
-      .then(row => row.identifier)
-
     try {
-      await paths.unlink(path.join(paths.zips, `${identifier}.zip`))
+      await paths.unlink(path.join(paths.zips, `${album.identifier}.zip`))
     } catch (error) {
       // Re-throw non-ENOENT error
       if (error.code !== 'ENOENT') throw error

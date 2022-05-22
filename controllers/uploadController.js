@@ -17,7 +17,8 @@ const logger = require('./../logger')
 const db = require('knex')(config.database)
 
 const self = {
-  onHold: new Set()
+  onHold: new Set(),
+  scanHelpers: {}
 }
 
 /** Preferences */
@@ -29,7 +30,8 @@ const fileIdentifierLengthChangeable = !config.uploads.fileIdentifierLength.forc
 
 const maxSize = parseInt(config.uploads.maxSize)
 const maxSizeBytes = maxSize * 1e6
-const urlMaxSizeBytes = parseInt(config.uploads.urlMaxSize) * 1e6
+const urlMaxSize = parseInt(config.uploads.urlMaxSize)
+const urlMaxSizeBytes = urlMaxSize * 1e6
 
 const maxFilesPerUpload = 20
 
@@ -47,8 +49,6 @@ const extensionsFilter = Array.isArray(config.extensionsFilter) &&
   config.extensionsFilter.length
 const urlExtensionsFilter = Array.isArray(config.uploads.urlExtensionsFilter) &&
   config.uploads.urlExtensionsFilter.length
-const temporaryUploads = Array.isArray(config.uploads.temporaryUploadAges) &&
-  config.uploads.temporaryUploadAges.length
 
 /** Chunks helper class & function **/
 
@@ -63,13 +63,7 @@ class ChunksData {
   }
 
   onTimeout () {
-    if (this.stream && !this.stream.writableEnded) {
-      this.stream.end()
-    }
-    if (this.hasher) {
-      this.hasher.dispose()
-    }
-    self.cleanUpChunks(this.uuid, true)
+    self.cleanUpChunks(this.uuid)
   }
 
   setTimeout (delay) {
@@ -141,6 +135,7 @@ const executeMulter = multer({
       file._isChunk = chunkedUploads && req.body.uuid !== undefined && req.body.chunkindex !== undefined
 
       if (file._isChunk) {
+        // Calling this will also reset its timeout
         initChunks(req.body.uuid)
           .then(chunksData => {
             file._chunksData = chunksData
@@ -166,7 +161,8 @@ const executeMulter = multer({
       }
     },
 
-    clamscan: utils.clamscan
+    scan: utils.scan,
+    scanHelpers: self.scanHelpers
   })
 }).array('files[]')
 
@@ -242,17 +238,26 @@ self.getUniqueRandomName = async (length, extension) => {
   throw new ServerError('Failed to allocate a unique name for the upload. Try again?')
 }
 
-self.parseUploadAge = age => {
-  if (age === undefined || age === null) {
-    return config.uploads.temporaryUploadAges[0]
+self.assertRetentionPeriod = (user, age) => {
+  if (!utils.retentions.enabled) return null
+
+  const group = user ? perms.group(user) : '_'
+  if (!group || !utils.retentions.periods[group]) {
+    throw new ClientError('You are not eligible for any file retention periods.', { statusCode: 403 })
   }
 
-  const parsed = parseFloat(age)
-  if (config.uploads.temporaryUploadAges.includes(parsed)) {
-    return parsed
-  } else {
-    return null
+  let parsed = parseFloat(age)
+  if (Number.isNaN(parsed) || age < 0) {
+    parsed = utils.retentions.default[group]
+  } else if (!utils.retentions.periods[group].includes(parsed)) {
+    throw new ClientError('You are not eligible for the specified file retention period.', { statusCode: 403 })
   }
+
+  if (!parsed && !utils.retentions.periods[group].includes(0)) {
+    throw new ClientError('Permanent uploads are not permitted.', { statusCode: 403 })
+  }
+
+  return parsed
 }
 
 self.parseStripTags = stripTags => {
@@ -285,13 +290,7 @@ self.upload = async (req, res, next) => {
     let albumid = parseInt(req.headers.albumid || req.params.albumid)
     if (isNaN(albumid)) albumid = null
 
-    let age = null
-    if (temporaryUploads) {
-      age = self.parseUploadAge(req.headers.age)
-      if (!age && !config.uploads.temporaryUploadAges.includes(0)) {
-        throw new ClientError('Permanent uploads are not permitted.', { statusCode: 403 })
-      }
-    }
+    const age = self.assertRetentionPeriod(user, req.headers.age)
 
     const func = req.body.urls ? self.actuallyUploadUrls : self.actuallyUploadFiles
     await func(req, res, user, albumid, age)
@@ -302,8 +301,9 @@ self.upload = async (req, res, next) => {
 
 self.actuallyUploadFiles = async (req, res, user, albumid, age) => {
   const error = await new Promise(resolve => {
+    req._user = user
     return executeMulter(req, res, err => resolve(err))
-  })
+  }).finally(() => delete req._user)
 
   if (error) {
     const suppress = [
@@ -349,9 +349,9 @@ self.actuallyUploadFiles = async (req, res, user, albumid, age) => {
     throw new ClientError('Empty files are not allowed.')
   }
 
-  if (utils.clamscan.instance) {
+  if (utils.scan.instance) {
     let scanResult
-    if (utils.clamscan.passthrough) {
+    if (utils.scan.passthrough) {
       scanResult = await self.assertPassthroughScans(req, user, infoMap)
     } else {
       scanResult = await self.scanFiles(req, user, infoMap)
@@ -383,85 +383,131 @@ self.actuallyUploadUrls = async (req, res, user, albumid, age) => {
     throw new ClientError(`Maximum ${maxFilesPerUpload} URLs at a time.`)
   }
 
+  const assertSize = (size, isContentLength = false) => {
+    if (config.filterEmptyFile && size === 0) {
+      throw new ClientError('Empty files are not allowed.')
+    } else if (size > urlMaxSizeBytes) {
+      if (isContentLength) {
+        throw new ClientError(`File too large. Content-Length header reports file is bigger than ${urlMaxSize} MB.`)
+      } else {
+        throw new ClientError(`File too large. File is bigger than ${urlMaxSize} MB.`)
+      }
+    }
+  }
+
   const downloaded = []
   const infoMap = []
   try {
     await Promise.all(urls.map(async url => {
-      const original = path.basename(url).split(/[?#]/)[0]
-      const extname = utils.extname(original)
+      let outStream
+      let hasher
+      try {
+        const original = path.basename(url).split(/[?#]/)[0]
+        const extname = utils.extname(original)
 
-      // Extensions filter
-      let filtered = false
-      if (urlExtensionsFilter && ['blacklist', 'whitelist'].includes(config.uploads.urlExtensionsFilterMode)) {
-        const match = config.uploads.urlExtensionsFilter.includes(extname.toLowerCase())
-        const whitelist = config.uploads.urlExtensionsFilterMode === 'whitelist'
-        filtered = ((!whitelist && match) || (whitelist && !match))
-      } else {
-        filtered = self.isExtensionFiltered(extname)
-      }
-
-      if (filtered) {
-        throw new ClientError(`${extname ? `${extname.substr(1).toUpperCase()} files` : 'Files with no extension'} are not permitted.`)
-      }
-
-      if (config.uploads.urlProxy) {
-        url = config.uploads.urlProxy
-          .replace(/{url}/g, encodeURIComponent(url))
-          .replace(/{url-noprot}/g, encodeURIComponent(url.replace(/^https?:\/\//, '')))
-      }
-
-      const length = self.parseFileIdentifierLength(req.headers.filelength)
-      const name = await self.getUniqueRandomName(length, extname)
-
-      const destination = path.join(paths.uploads, name)
-      const outStream = fs.createWriteStream(destination)
-      const hash = blake3.createHash()
-
-      // Push to array early, so regardless of its progress it will be deleted on errors
-      downloaded.push(destination)
-
-      // Limit max response body size with maximum allowed size
-      const fetchFile = await fetch(url, { size: urlMaxSizeBytes })
-        .then(res => new Promise((resolve, reject) => {
-          if (res.status === 200) {
-            const onerror = error => {
-              hash.dispose()
-              reject(error)
-            }
-            outStream.on('error', onerror)
-            res.body.on('error', onerror)
-            res.body.on('data', d => hash.update(d))
-
-            res.body.pipe(outStream)
-            outStream.on('finish', () => resolve(res))
-          } else {
-            resolve(res)
-          }
-        }))
-
-      if (fetchFile.status !== 200) {
-        throw new ServerError(`${fetchFile.status} ${fetchFile.statusText}`)
-      }
-
-      infoMap.push({
-        path: destination,
-        data: {
-          filename: name,
-          originalname: original,
-          extname,
-          mimetype: fetchFile.headers.get('content-type').split(';')[0] || '',
-          size: outStream.bytesWritten,
-          hash: hash.digest('hex'),
-          albumid,
-          age
+        // Extensions filter
+        let filtered = false
+        if (urlExtensionsFilter && ['blacklist', 'whitelist'].includes(config.uploads.urlExtensionsFilterMode)) {
+          const match = config.uploads.urlExtensionsFilter.includes(extname.toLowerCase())
+          const whitelist = config.uploads.urlExtensionsFilterMode === 'whitelist'
+          filtered = ((!whitelist && match) || (whitelist && !match))
+        } else {
+          filtered = self.isExtensionFiltered(extname)
         }
-      })
+
+        if (filtered) {
+          throw new ClientError(`${extname ? `${extname.substr(1).toUpperCase()} files` : 'Files with no extension'} are not permitted.`)
+        }
+
+        if (config.uploads.urlProxy) {
+          url = config.uploads.urlProxy
+            .replace(/{url}/g, encodeURIComponent(url))
+            .replace(/{url-noprot}/g, encodeURIComponent(url.replace(/^https?:\/\//, '')))
+        }
+
+        // Try to determine size early via Content-Length header,
+        // but continue anyway if it isn't a valid number
+        try {
+          const head = await fetch(url, { method: 'HEAD', size: urlMaxSizeBytes })
+          if (head.status === 200) {
+            const contentLength = parseInt(head.headers.get('content-length'))
+            if (!Number.isNaN(contentLength)) {
+              assertSize(contentLength, true)
+            }
+          }
+        } catch (ex) {
+          // Re-throw only if ClientError, otherwise ignore
+          if (ex instanceof ClientError) {
+            throw ex
+          }
+        }
+
+        const length = self.parseFileIdentifierLength(req.headers.filelength)
+        const name = await self.getUniqueRandomName(length, extname)
+
+        const destination = path.join(paths.uploads, name)
+        outStream = fs.createWriteStream(destination)
+        hasher = blake3.createHash()
+
+        // Push to array early, so regardless of its progress it will be deleted on errors
+        downloaded.push(destination)
+
+        // Limit max response body size with maximum allowed size
+        const fetchFile = await fetch(url, { method: 'GET', size: urlMaxSizeBytes })
+          .then(res => new Promise((resolve, reject) => {
+            if (res.status === 200) {
+              outStream.on('error', reject)
+              res.body.on('error', reject)
+              res.body.on('data', d => hasher.update(d))
+
+              res.body.pipe(outStream)
+              outStream.on('finish', () => resolve(res))
+            } else {
+              resolve(res)
+            }
+          }))
+
+        if (fetchFile.status !== 200) {
+          throw new ServerError(`${fetchFile.status} ${fetchFile.statusText}`)
+        }
+
+        const contentType = fetchFile.headers.get('content-type')
+        // Re-test size via actual bytes written to physical file
+        assertSize(outStream.bytesWritten)
+
+        infoMap.push({
+          path: destination,
+          data: {
+            filename: name,
+            originalname: original,
+            extname,
+            mimetype: contentType ? contentType.split(';')[0] : '',
+            size: outStream.bytesWritten,
+            hash: hasher.digest('hex'),
+            albumid,
+            age
+          }
+        })
+      } catch (err) {
+        // Dispose of unfinished write & hasher streams
+        if (outStream && !outStream.destroyed) {
+          outStream.destroy()
+        }
+        try {
+          if (hasher) {
+            hasher.dispose()
+          }
+        } catch (_) {}
+
+        // Re-throw errors
+        throw err
+      }
     }))
 
     // If no errors encountered, clear cache of downloaded files
     downloaded.length = 0
 
-    if (utils.clamscan.instance) {
+    if (utils.scan.instance) {
       const scanResult = await self.scanFiles(req, user, infoMap)
       if (scanResult) throw new ClientError(scanResult)
     }
@@ -512,23 +558,28 @@ self.finishChunks = async (req, res, next) => {
 }
 
 self.actuallyFinishChunks = async (req, res, user) => {
-  const check = file => typeof file.uuid !== 'string' ||
-    !chunksData[file.uuid] ||
-    chunksData[file.uuid].chunks < 2
-
   const files = req.body.files
-  if (!Array.isArray(files) || !files.length || files.some(check)) {
+  if (!Array.isArray(files) || !files.length) {
     throw new ClientError('Bad request.')
   }
 
   const infoMap = []
   try {
     await Promise.all(files.map(async file => {
-      // Close stream
-      chunksData[file.uuid].stream.end()
+      if (!file.uuid || typeof chunksData[file.uuid] === 'undefined') {
+        throw new ClientError('Invalid file UUID, or chunks data had already timed out. Try again?')
+      }
 
-      if (chunksData[file.uuid].chunks > maxChunksCount) {
-        throw new ClientError('Too many chunks.')
+      // Suspend timeout
+      // If the chunk errors out there, it will be immediately cleaned up anyway
+      chunksData[file.uuid].clearTimeout()
+
+      // Conclude write and hasher streams
+      chunksData[file.uuid].stream.end()
+      const hash = chunksData[file.uuid].hasher.digest('hex')
+
+      if (chunksData[file.uuid].chunks < 2 || chunksData[file.uuid].chunks > maxChunksCount) {
+        throw new ClientError('Invalid chunks count.')
       }
 
       file.extname = typeof file.original === 'string' ? utils.extname(file.original) : ''
@@ -536,12 +587,7 @@ self.actuallyFinishChunks = async (req, res, user) => {
         throw new ClientError(`${file.extname ? `${file.extname.substr(1).toUpperCase()} files` : 'Files with no extension'} are not permitted.`)
       }
 
-      if (temporaryUploads) {
-        file.age = self.parseUploadAge(file.age)
-        if (!file.age && !config.uploads.temporaryUploadAges.includes(0)) {
-          throw new ClientError('Permanent uploads are not permitted.')
-        }
-      }
+      file.age = self.assertRetentionPeriod(user, file.age)
 
       file.size = chunksData[file.uuid].stream.bytesWritten
       if (config.filterEmptyFile && file.size === 0) {
@@ -569,7 +615,6 @@ self.actuallyFinishChunks = async (req, res, user) => {
       } else {
         await paths.rename(tmpfile, destination)
       }
-      const hash = chunksData[file.uuid].hasher.digest('hex')
 
       // Continue even when encountering errors
       await self.cleanUpChunks(file.uuid).catch(logger.error)
@@ -591,7 +636,7 @@ self.actuallyFinishChunks = async (req, res, user) => {
       infoMap.push({ path: destination, data })
     }))
 
-    if (utils.clamscan.instance) {
+    if (utils.scan.instance) {
       const scanResult = await self.scanFiles(req, user, infoMap)
       if (scanResult) throw new ClientError(scanResult)
     }
@@ -601,16 +646,11 @@ self.actuallyFinishChunks = async (req, res, user) => {
     const result = await self.storeFilesToDb(req, res, user, infoMap)
     await self.sendUploadResponse(req, res, user, result)
   } catch (error) {
-    // Dispose unfinished hasher and clean up leftover chunks
     // Should continue even when encountering errors
     files.forEach(file => {
-      if (chunksData[file.uuid] === undefined) return
-      try {
-        if (chunksData[file.uuid].hasher) {
-          chunksData[file.uuid].hasher.dispose()
-        }
-      } catch (_) {}
-      self.cleanUpChunks(file.uuid).catch(logger.error)
+      if (file.uuid && chunksData[file.uuid]) {
+        self.cleanUpChunks(file.uuid).catch(logger.error)
+      }
     })
 
     // Re-throw error
@@ -618,7 +658,17 @@ self.actuallyFinishChunks = async (req, res, user) => {
   }
 }
 
-self.cleanUpChunks = async (uuid, onTimeout) => {
+self.cleanUpChunks = async uuid => {
+  // Dispose of unfinished write & hasher streams
+  if (chunksData[uuid].stream && !chunksData[uuid].stream.destroyed) {
+    chunksData[uuid].stream.destroy()
+  }
+  try {
+    if (chunksData[uuid].hasher) {
+      chunksData[uuid].hasher.dispose()
+    }
+  } catch (_) {}
+
   // Remove tmp file
   await paths.unlink(path.join(chunksData[uuid].root, chunksData[uuid].filename))
     .catch(error => {
@@ -630,27 +680,50 @@ self.cleanUpChunks = async (uuid, onTimeout) => {
   await paths.rmdir(chunksData[uuid].root)
 
   // Delete cached chunks data
-  if (!onTimeout) chunksData[uuid].clearTimeout()
   delete chunksData[uuid]
 }
 
 /** Virus scanning (ClamAV) */
+
+self.scanHelpers.assertUserBypass = (user, filenames) => {
+  if (!user || !utils.scan.groupBypass) return false
+  if (!Array.isArray(filenames)) filenames = [filenames]
+  logger.debug(`[ClamAV]: ${filenames.join(', ')}: Skipped, uploaded by ${user.username} (${utils.scan.groupBypass})`)
+  return perms.is(user, utils.scan.groupBypass)
+}
+
+self.scanHelpers.assertFileBypass = data => {
+  if (typeof data !== 'object' || !data.filename) return false
+
+  const extname = data.extname || utils.extname(data.filename)
+  if (utils.scan.whitelistExtensions && utils.scan.whitelistExtensions.includes(extname)) {
+    logger.debug(`[ClamAV]: ${data.filename}: Skipped, extension whitelisted`)
+    return true
+  }
+
+  if (utils.scan.maxSize && Number.isFinite(data.size) && data.size > utils.scan.maxSize) {
+    logger.debug(`[ClamAV]: ${data.filename}: Skipped, size ${data.size} > ${utils.scan.maxSize}`)
+    return true
+  }
+
+  return false
+}
 
 self.assertPassthroughScans = async (req, user, infoMap) => {
   const foundThreats = []
   const unableToScan = []
 
   for (const info of infoMap) {
-    if (info.data.clamscan) {
-      if (info.data.clamscan.isInfected) {
-        logger.log(`[ClamAV]: ${info.data.filename}: ${info.data.clamscan.viruses.join(', ')}`)
-        foundThreats.push(...info.data.clamscan.viruses)
-      } else if (info.data.clamscan.isInfected === null) {
+    if (info.data.scan) {
+      if (info.data.scan.isInfected) {
+        logger.log(`[ClamAV]: ${info.data.filename}: ${info.data.scan.viruses.join(', ')}`)
+        foundThreats.push(...info.data.scan.viruses)
+      } else if (info.data.scan.isInfected === null) {
         logger.log(`[ClamAV]: ${info.data.filename}: Unable to scan`)
         unableToScan.push(info.data.filename)
+      } else {
+        logger.debug(`[ClamAV]: ${info.data.filename}: File is clean`)
       }
-    } else {
-      unableToScan.push(info.data.filename)
     }
   }
 
@@ -675,32 +748,30 @@ self.assertPassthroughScans = async (req, user, infoMap) => {
 }
 
 self.scanFiles = async (req, user, infoMap) => {
-  if (user && utils.clamscan.groupBypass && perms.is(user, utils.clamscan.groupBypass)) {
-    logger.debug(`[ClamAV]: Skipping ${infoMap.length} file(s), ${utils.clamscan.groupBypass} group bypass`)
+  const filenames = infoMap.map(info => info.data.filename)
+  if (self.scanHelpers.assertUserBypass(user, filenames)) {
     return false
   }
 
   const foundThreats = []
   const unableToScan = []
   const result = await Promise.all(infoMap.map(async info => {
-    if (utils.clamscan.whitelistExtensions && utils.clamscan.whitelistExtensions.includes(info.data.extname)) {
-      logger.debug(`[ClamAV]: Skipping ${info.data.filename}, extension whitelisted`)
-      return
-    }
-
-    if (utils.clamscan.maxSize && info.data.size > utils.clamscan.maxSize) {
-      logger.debug(`[ClamAV]: Skipping ${info.data.filename}, size ${info.data.size} > ${utils.clamscan.maxSize}`)
-      return
-    }
+    if (self.scanHelpers.assertFileBypass({
+      filename: info.data.filename,
+      extname: info.data.extname,
+      size: info.data.size
+    })) return
 
     logger.debug(`[ClamAV]: ${info.data.filename}: Scanning\u2026`)
-    const response = await utils.clamscan.instance.isInfected(info.path)
+    const response = await utils.scan.instance.isInfected(info.path)
     if (response.isInfected) {
       logger.log(`[ClamAV]: ${info.data.filename}: ${response.viruses.join(', ')}`)
       foundThreats.push(...response.viruses)
     } else if (response.isInfected === null) {
       logger.log(`[ClamAV]: ${info.data.filename}: Unable to scan`)
       unableToScan.push(info.data.filename)
+    } else {
+      logger.debug(`[ClamAV]: ${info.data.filename}: File is clean`)
     }
   })).then(() => {
     if (foundThreats.length) {
@@ -711,7 +782,7 @@ self.scanFiles = async (req, user, infoMap) => {
       return `Unable to scan: ${unableToScan[0]}${more ? ', and more' : ''}.`
     }
   }).catch(error => {
-    logger.error(`[ClamAV]: ${infoMap.map(info => info.data.filename).join(', ')}: ${error.toString()}`)
+    logger.error(`[ClamAV]: ${filenames.join(', ')}: ${error.toString()}`)
     return 'An unexpected error occurred with ClamAV, please contact the site owner.'
   })
 
@@ -1430,7 +1501,7 @@ self.list = async (req, res, next) => {
     else if (offset < 0) offset = Math.max(0, Math.ceil(count / 25) + offset)
 
     const columns = ['id', 'name', 'original', 'userid', 'size', 'timestamp']
-    if (temporaryUploads) columns.push('expirydate')
+    if (utils.retentions.enabled) columns.push('expirydate')
     if (!all ||
       filterObj.queries.albumid ||
       filterObj.queries.exclude.albumid ||

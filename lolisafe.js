@@ -18,8 +18,6 @@ const NodeClam = require('clamscan')
 const nunjucks = require('nunjucks')
 const path = require('path')
 const rateLimit = require('express-rate-limit')
-const readline = require('readline')
-const serveStatic = require('@bobbywibowo/serve-static')
 const { accessSync, constants } = require('fs')
 
 // Check required config files
@@ -54,18 +52,41 @@ const db = require('knex')(config.database)
 const isDevMode = process.env.NODE_ENV === 'development'
 
 // Helmet security headers
-if (config.helmet instanceof Object && Object.keys(config.helmet).length) {
-  safe.use(helmet(config.helmet))
+if (config.helmet instanceof Object) {
+  // If an empty object, simply do not use Helmet
+  if (Object.keys(config.helmet).length) {
+    safe.use(helmet(config.helmet))
+  }
 } else {
   // Fallback to old behavior when the whole helmet option was not configurable from the config file
-  safe.use(helmet({
+  const defaults = {
     contentSecurityPolicy: false,
-    hsts: false
-  }))
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: false,
+    hsts: false,
+    originAgentCluster: false
+  }
 
   if (config.hsts instanceof Object && Object.keys(config.hsts).length) {
-    safe.use(helmet.hsts(config.hsts))
+    defaults.hsts = config.hsts
   }
+
+  safe.use(helmet(defaults))
+}
+
+// Access-Control-Allow-Origin
+if (config.accessControlAllowOrigin) {
+  if (config.accessControlAllowOrigin === true) {
+    config.accessControlAllowOrigin = '*'
+  }
+  safe.use((req, res, next) => {
+    res.set('Access-Control-Allow-Origin', config.accessControlAllowOrigin)
+    if (config.accessControlAllowOrigin !== '*') {
+      res.vary('Origin')
+    }
+    next()
+  })
 }
 
 if (config.trustProxy) {
@@ -96,9 +117,7 @@ safe.use(bodyParser.urlencoded({ extended: true }))
 safe.use(bodyParser.json())
 
 const cdnPages = [...config.pages]
-let setHeaders = res => {
-  res.set('Access-Control-Allow-Origin', '*')
-}
+let setHeaders
 
 const contentTypes = config.overrideContentTypes && Object.keys(config.overrideContentTypes)
 const overrideContentTypes = (res, path) => {
@@ -138,7 +157,7 @@ const initServeStaticUploads = (opts = {}) => {
     // serveStatic is provided with @bobbywibowo/serve-static, a fork of express/serve-static.
     // The fork allows specifying an async setHeaders function by the name preSetHeaders.
     // It will await the said function before creating 'send' stream to client.
-    safe.use('/', serveStatic(paths.uploads, opts))
+    safe.use('/', require('@bobbywibowo/serve-static')(paths.uploads, opts))
   } else {
     safe.use('/', express.static(paths.uploads, opts))
   }
@@ -178,7 +197,6 @@ if (config.cacheControl) {
   if (config.serveFilesWithNode) {
     initServeStaticUploads({
       setHeaders: (res, path) => {
-        res.set('Access-Control-Allow-Origin', '*')
         // Override Content-Type if necessary
         if (contentTypes && contentTypes.length) {
           overrideContentTypes(res, path)
@@ -196,13 +214,11 @@ if (config.cacheControl) {
   // This requires the assets to use version in their query string,
   // as they will be cached by clients for a very long time.
   setHeaders = res => {
-    res.set('Access-Control-Allow-Origin', '*')
     res.set('Cache-Control', cacheControls.static)
   }
 
   // Consider album ZIPs static as well, since they use version in their query string
   safe.use(['/api/album/zip'], (req, res, next) => {
-    res.set('Access-Control-Allow-Origin', '*')
     const versionString = parseInt(req.query.v)
     if (versionString > 0) {
       res.set('Cache-Control', cacheControls.static)
@@ -214,7 +230,6 @@ if (config.cacheControl) {
 } else if (config.serveFilesWithNode) {
   initServeStaticUploads({
     setHeaders: (res, path) => {
-      res.set('Access-Control-Allow-Origin', '*')
       // Override Content-Type if necessary
       if (contentTypes && contentTypes.length) {
         overrideContentTypes(res, path)
@@ -313,9 +328,9 @@ safe.use('/api', api)
         logger.error('Missing object config.uploads.scan.clamOptions (check config.sample.js)')
         process.exit(1)
       }
-      utils.clamscan.instance = await new NodeClam().init(config.uploads.scan.clamOptions)
-      utils.clamscan.version = await utils.clamscan.instance.getVersion().then(s => s.trim())
-      logger.log(`Connection established with ${utils.clamscan.version}`)
+      utils.scan.instance = await new NodeClam().init(config.uploads.scan.clamOptions)
+      utils.scan.version = await utils.scan.instance.getVersion().then(s => s.trim())
+      logger.log(`Connection established with ${utils.scan.version}`)
     }
 
     // Cache file identifiers
@@ -356,25 +371,30 @@ safe.use('/api', api)
       }
     }
 
-    // Temporary uploads (only check for expired uploads if config.uploads.temporaryUploadsInterval is also set)
-    if (Array.isArray(config.uploads.temporaryUploadAges) &&
-      config.uploads.temporaryUploadAges.length &&
-      config.uploads.temporaryUploadsInterval) {
+    // Initiate internal periodical check ups of temporary uploads if required
+    if (utils.retentions && utils.retentions.enabled && config.uploads.temporaryUploadsInterval > 0) {
       let temporaryUploadsInProgress = false
       const temporaryUploadCheck = async () => {
         if (temporaryUploadsInProgress) return
 
         temporaryUploadsInProgress = true
         try {
-          const result = await utils.bulkDeleteExpired()
+          const result = await utils.bulkDeleteExpired(false, isDevMode)
 
-          if (result.expired.length) {
-            let logMessage = `Expired uploads: ${result.expired.length} deleted`
-            if (result.failed.length) {
-              logMessage += `, ${result.failed.length} errored`
+          if (result.expired.length || result.failed.length) {
+            if (isDevMode) {
+              let logMessage = `Expired uploads (${result.expired.length}): ${result.expired.map(file => file.name).join(', ')}`
+              if (result.failed.length) {
+                logMessage += `\nErrored (${result.failed.length}): ${result.failed.map(file => file.name).join(', ')}`
+              }
+              logger.debug(logMessage)
+            } else {
+              let logMessage = `Expired uploads: ${result.expired.length} deleted`
+              if (result.failed.length) {
+                logMessage += `, ${result.failed.length} errored`
+              }
+              logger.log(logMessage)
             }
-
-            logger.log(logMessage)
           }
         } catch (error) {
           // Simply print-out errors, then continue
@@ -390,27 +410,27 @@ safe.use('/api', api)
 
     // NODE_ENV=development yarn start
     if (isDevMode) {
+      const { inspect } = require('util')
       // Add readline interface to allow evaluating arbitrary JavaScript from console
-      readline.createInterface({
-        input: process.stdin,
-        output: process.stdout,
-        prompt: ''
+      require('readline').createInterface({
+        input: process.stdin
       }).on('line', line => {
         try {
           if (line === 'rs') return
           if (line === '.exit') return process.exit(0)
           // eslint-disable-next-line no-eval
-          logger.log(eval(line))
+          const evaled = eval(line)
+          process.stdout.write(`${typeof evaled === 'string' ? evaled : inspect(evaled)}\n`)
         } catch (error) {
-          logger.error(error.toString())
+          process.stderr.write(`${error.stack}\n`)
         }
       }).on('SIGINT', () => {
         process.exit(0)
       })
-      logger.log('!!! DEVELOPMENT MODE !!!')
-      logger.log('- Nunjucks will auto rebuild (not live reload)')
-      logger.log('- Rate limits disabled')
-      logger.log('- Readline interface enabled')
+      logger.log(utils.stripIndents(`!!! DEVELOPMENT MODE !!!
+        [=] Nunjucks will auto rebuild (not live reload)
+        [=] HTTP rate limits disabled
+        [=] Readline interface enabled (eval arbitrary JS input)`))
     }
   } catch (error) {
     logger.error(error)

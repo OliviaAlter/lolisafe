@@ -49,12 +49,23 @@ self.verify = async (req, res, next) => {
       .select('username', 'permission')
       .first()
 
-    if (!user) throw new ClientError('Invalid token.', { statusCode: 403 })
+    if (!user) {
+      throw new ClientError('Invalid token.', { statusCode: 403, code: 10001 })
+    }
 
     const obj = {
       success: true,
       username: user.username,
       permissions: perms.mapPermissions(user)
+    }
+
+    const group = perms.group(user)
+    if (group) {
+      obj.group = group
+      if (utils.retentions.enabled) {
+        obj.retentionPeriods = utils.retentions.periods[group]
+        obj.defaultRetentionPeriod = utils.retentions.default[group]
+      }
     }
 
     if (utils.clientVersion) {
