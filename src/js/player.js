@@ -108,14 +108,13 @@ page.reloadVideo = () => {
     const options = {
       language: 'en',
       playbackRates: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2],
-      responsive: true
+      responsive: true,
+      plugins: {}
     }
 
     if (isaudio) {
-      options.plugins = {
-        wavesurfer: {
-          backend: 'MediaElement'
-        }
+      options.plugins.wavesurfer = {
+        responsive: true
       }
     }
 
@@ -128,6 +127,25 @@ page.reloadVideo = () => {
       page.player.src({ src, type })
     })
     page.player.seekButtons({ forward: 10, back: 10 })
+
+    const videoJSButton = videojs.getComponent('Button')
+    const loopButtonText = () => page.player.loop()
+      ? 'Disable loop'
+      : 'Enable loop'
+    const loopButton = videojs.extend(videoJSButton, {
+      constructor () {
+        videoJSButton.apply(this, arguments)
+        this.addClass('vjs-loop-button')
+        this.controlText(loopButtonText())
+      },
+      handleClick () {
+        page.player.loop(!page.player.loop())
+        this.toggleClass('vjs-loop-enabled', page.player.loop())
+        this.controlText(loopButtonText())
+      }
+    })
+    videojs.registerComponent('loopButton', loopButton)
+    page.player.getChild('controlBar').addChild('loopButton')
 
     if (page.titleFormat) {
       document.title = page.titleFormat.replace(/%identifier%/g, page.urlIdentifier)

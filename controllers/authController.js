@@ -21,7 +21,7 @@ const self = {
   pass: {
     min: 6,
     // Should not be more than 72 characters
-    // https://github.com/kelektiv/node.bcrypt.js#security-issues-and-concerns
+    // https://github.com/kelektiv/node.bcrypt.js/tree/v5.0.1#security-issues-and-concerns
     max: 64,
     // Length of randomized password
     // when resetting passwordthrough Dashboard's Manage Users.
@@ -29,7 +29,7 @@ const self = {
   }
 }
 
-// https://github.com/kelektiv/node.bcrypt.js#a-note-on-rounds
+// https://github.com/kelektiv/node.bcrypt.js/tree/v5.0.1#a-note-on-rounds
 const saltRounds = 10
 
 self.verify = async (req, res, next) => {
@@ -48,7 +48,7 @@ self.verify = async (req, res, next) => {
       .where('username', username)
       .first()
 
-    if (!user) throw new ClientError('Username does not exist.')
+    if (!user) throw new ClientError('Wrong credentials.', { statusCode: 403 })
 
     if (user.enabled === false || user.enabled === 0) {
       throw new ClientError('This account has been disabled.', { statusCode: 403 })
@@ -56,7 +56,7 @@ self.verify = async (req, res, next) => {
 
     const result = await bcrypt.compare(password, user.password)
     if (result === false) {
-      throw new ClientError('Wrong password.', { statusCode: 403 })
+      throw new ClientError('Wrong credentials.', { statusCode: 403 })
     } else {
       await res.json({ success: true, token: user.token })
     }

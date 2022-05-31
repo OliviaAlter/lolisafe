@@ -689,7 +689,7 @@ module.exports = {
       If more than one are provided, it will use the first one from left to right, but it will NOT
       attempt to use the next methods even if the selected one fails (meaning there's no fallback mechanism).
       Consult https://api.cloudflare.com/#getting-started-requests for differences.
-      API token configuration example: https://github.com/BobbyWibowo/lolisafe/pull/216#issue-440389284.
+      API token configuration example: https://github.com/OliviaAlter/lolisafe/pull/216#issue-440389284.
       After everything is ready, you can then set "purgeCache" to true.
     */
     zoneId: '',

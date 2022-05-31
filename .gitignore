@@ -40,6 +40,10 @@ package-lock.json
 /.vscode
 *.code-workspace
 
+# Configuration file
+/config.js
+/views/_globals.njk
+
 # Database
 /database/db
 /database/db-*

@@ -10,7 +10,7 @@ const newsfeed = {
 }
 
 newsfeed.simpleParseDate = string => {
-  // For now limited to support the following examples (used in blog.fiery.me):
+  // For now limited to support the following examples (used in blog.spinaria.xyz):
   // Mon, 27 Jul 2020 18:30:00 GMT
   // Sat, 16 May 2020 14:55:00 GMT
   // Probably better to use a library if it needs to support other formats.

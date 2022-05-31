@@ -67,4 +67,4 @@ mode:
 
 ## bump-versions.js
 
-[\[...\]](https://github.com/OliviaAlter/lolisafe/tree/safe.fiery.me/src#readme)
+[\[...\]](https://github.com/OliviaAlter/lolisafe/tree/main/src)
