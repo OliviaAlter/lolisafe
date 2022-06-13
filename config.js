@@ -242,7 +242,7 @@ module.exports = {
       you must set client_max_body_size to the same as maxSize.
       https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size
     */
-    maxSize: '6144MB',
+    maxSize: '8192MB',
 
     /*
       Chunk size for chunked uploads. Needs to be in MB.
