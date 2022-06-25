@@ -589,7 +589,7 @@ module.exports = {
       since long-caching of such huge files are against Cloudflare's Terms of Service.
       NOTE: Set to falsy value to disable max total size.
     */
-    zipMaxTotalSize: '8192MB',
+    zipMaxTotalSize: '2048MB',
 
     /*
       If you want the service to automatically use Cloudflare API to purge cache on file deletion,
