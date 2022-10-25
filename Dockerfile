@@ -1,6 +1,6 @@
 FROM node:lts-alpine
 
-LABEL name "lolisafe-olivia"
+LABEL name "safe-olivia"
 LABEL version "3.0.0"
 LABEL maintainer "evanmn <docker@evan.mn>"
 

@@ -1,8 +1,8 @@
 {
-  "Name": "lolisafe.spinaria.xyz",
+  "Name": "safe.myouri.cyou",
   "DestinationType": "ImageUploader, FileUploader",
   "RequestMethod": "POST",
-  "RequestURL": "https://lolisafe.spinaria.xyz/api/upload",
+  "RequestURL": "https://safe.myouri.cyou/api/upload",
   "Headers": {
     "token": "",
     "albumid": "",

@@ -8,7 +8,7 @@
 
 [![JavaScript Style Guide](https://cdn.rawgit.com/standard/standard/master/badge.svg)](https://github.com/standard/standard)
 
-This fork is the one being used at [https://lolisafe.spinaria.xyz/](https://lolisafe.spinaria.xyz/). If you are looking for the original, head to [WeebDev/lolisafe](https://github.com/WeebDev/lolisafe).
+This fork is the one being used at [https://lolisafe.myouri.cyou/](https://lolisafe.myouri.cyou/). If you are looking for the original, head to [WeebDev/lolisafe](https://github.com/WeebDev/lolisafe).
 
 If you want to use an existing lolisafe v3 database with this fork, copy over `database/db` from your previous installation, then run `node ./database/migration.js` (or `yarn migrate`) at least once to create the new columns introduced in this fork (don't forget to make a backup).
 

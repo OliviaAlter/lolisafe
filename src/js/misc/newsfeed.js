@@ -2,7 +2,7 @@
 
 const newsfeed = {
   lsKey: 'newsfeed',
-  feedUrl: 'https://blog.spinaria.xyz/rss-newsfeed.xml',
+  feedUrl: 'https://blog.myouri.cyou/rss-newsfeed.xml',
   maxItems: 3,
   maxAge: 91 * 24 * 60 * 60, // 91 days (~3 months)
   dismissed: {},
@@ -10,7 +10,7 @@ const newsfeed = {
 }
 
 newsfeed.simpleParseDate = string => {
-  // For now limited to support the following examples (used in blog.spinaria.xyz):
+  // For now limited to support the following examples (used in blog.myouri.cyou):
   // Mon, 27 Jul 2020 18:30:00 GMT
   // Sat, 16 May 2020 14:55:00 GMT
   // Probably better to use a library if it needs to support other formats.

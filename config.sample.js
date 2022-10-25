@@ -36,7 +36,7 @@ module.exports = {
     NOTE: Set to falsy value if using Docker.
   */
   serveFilesWithNode: false,
-  domain: 'https://lolisafe.moe',
+  domain: 'https://safe.myouri.cyou',
 
   /*
     If you serve files with node, you can optionally choose to set Content-Disposition header

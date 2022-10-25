@@ -36,7 +36,7 @@ module.exports = {
     NOTE: Set to falsy value if using Docker.
   */
   serveFilesWithNode: true,
-  domain: 'https://lolisafe.spinaria.xyz',
+  domain: 'https://safe.myouri.cyou',
 
   /*
     If you serve files with node, you can optionally choose to set Content-Disposition header
@@ -123,7 +123,7 @@ module.exports = {
   /*
     Show hash of the current git commit in homepage.
   */
-  showGitHash: false,
+  showGitHash: true,
 
   /*
     Path to error pages. Only 404 and 500 will be used.
